@@ -1,0 +1,149 @@
+pragma solidity ^0.4.26;
+//SPDX-License-Identifier: AGPL-3.0-or-later
+contract ERC20DEFI{
+	uint256 public totalSupply;
+	mapping(address => uint256) public balanceOf;
+	mapping(address => mapping(address => uint256)) public allowance;
+	constructor(uint256 mint) public{
+		totalSupply = mint;
+		balanceOf[msg.sender] = mint;
+	}
+	function () external {
+		assembly{
+			// Protection against sending Ether
+			require(iszero(callvalue()))
+
+			// Dispatcher
+			switch selector()
+			case 0xa9059cbb /* "transfer(address,uint256)" */ {
+				executeTransfer(caller(), decodeAsAddress(0), decodeAsAddress(1))
+				returnTrue()
+			}
+			case 0x23b872dd /* "transferFrom(address,address,uint256)" */ {
+				transferFrom(decodeAsAddress(0), decodeAsAddress(1), decodeAsUint(2))
+				returnTrue()
+			}
+			case 0x095ea7b3 /* "approve(address,uint256)" */ {
+				approve(decodeAsAddress(0), decodeAsUint(1))
+				returnTrue()
+			}
+			default {
+				revert(0, 0)
+			}
+			function approve(spender, amount) {
+				revertIfZeroAddress(spender)
+				setAllowance(caller(), spender, amount)
+				emitApproval(caller(), spender, amount)
+			}
+			function transferFrom(from, to, amount) {
+				decreaseAllowanceBy(from, caller(), amount)
+				executeTransfer(from, to, amount)
+			}
+
+			function executeTransfer(from, to, amount) {
+				revertIfZeroAddress(to)
+				deductFromBalance(from, amount)
+				addToBalance(to, amount)
+				emitTransfer(from, to, amount)
+			}
+
+
+			/* ---------- calldata decoding functions ----------- */
+			function selector() -> s {
+				s := div(calldataload(0), 0x100000000000000000000000000000000000000000000000000000000)
+			}
+
+			function decodeAsAddress(offset) -> v {
+				v := decodeAsUint(offset)
+				if iszero(iszero(and(v, not(0xffffffffffffffffffffffffffffffffffffffff)))) {
+					revert(0, 0)
+				}
+			}
+			function decodeAsUint(offset) -> v {
+				let pos := add(4, mul(offset, 0x20))
+				if lt(calldatasize(), add(pos, 0x20)) {
+					revert(0, 0)
+				}
+				v := calldataload(pos)
+			}
+			/* ---------- calldata encoding functions ---------- */
+			function returnUint(v) {
+				mstore(0, v)
+				return(0, 0x20)
+			}
+			function returnTrue() {
+				returnUint(1)
+			}
+
+			/* -------- events ---------- */
+			function emitTransfer(from, to, amount) {
+				let signatureHash := 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef
+				emitEvent(signatureHash, from, to, amount)
+			}
+			function emitApproval(from, spender, amount) {
+				let signatureHash := 0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925
+				emitEvent(signatureHash, from, spender, amount)
+			}
+			function emitEvent(signatureHash, indexed1, indexed2, nonIndexed) {
+				mstore(0, nonIndexed)
+				log3(0, 0x20, signatureHash, indexed1, indexed2)
+			}
+
+			/* -------- storage layout ---------- */
+			function totalSupplyPos() -> p { p := 0 }
+			function accountToStorageOffset(account) -> offset {
+				mstore(0, account)
+				mstore(0x20, 1)
+				offset := keccak256(0, 0x40)
+			}
+			function allowanceStorageOffset(account, spender) -> offset {
+				mstore(0, account)
+				mstore(0x20, 2)
+				mstore(0x20, keccak256(0, 0x40))
+				mstore(0, spender)
+				offset := keccak256(0, 0x40)
+			}
+
+			/* -------- storage access ---------- */
+			function totalSupply() -> supply {
+				supply := sload(totalSupplyPos())
+			}
+			function addToBalance(account, amount) {
+				let offset := accountToStorageOffset(account)
+				sstore(offset, add(sload(offset), amount))
+			}
+			function deductFromBalance(account, amount) {
+				let offset := accountToStorageOffset(account)
+				let bal := sload(offset)
+				require(lte(amount, bal))
+				sstore(offset, sub(bal, amount))
+			}
+			function setAllowance(account, spender, amount) {
+				sstore(allowanceStorageOffset(account, spender), amount)
+			}
+			function decreaseAllowanceBy(account, spender, amount) {
+				let offset := allowanceStorageOffset(account, spender)
+				let currentAllowance := sload(offset)
+				require(lte(amount, currentAllowance))
+				//DEFI gas optimization: don't decrement unlimited approval
+				if not(iszero(add(currentAllowance, 1))){
+					sstore(offset, sub(currentAllowance, amount))
+				}
+			}
+
+			/* ---------- utility functions ---------- */
+			function lte(a, b) -> r {
+				r := iszero(gt(a, b))
+			}
+			function gte(a, b) -> r {
+				r := iszero(lt(a, b))
+			}
+			function revertIfZeroAddress(addr) {
+				require(addr)
+			}
+			function require(condition) {
+				if iszero(condition) { revert(0, 0) }
+			}
+		}
+	}
+}
